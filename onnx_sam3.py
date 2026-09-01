@@ -83,7 +83,7 @@ class Sam3OnnxRunner:
         self,
         embedding: dict[str, Any],
         prompt,
-        confidence_threshold: float = 0.4,
+        confidence_threshold: float = 0.3,
         nms_threshold: float | None = 0.7,
         nms_mode: str = "mask",
         max_instances: int | None = None,
@@ -140,7 +140,7 @@ def phenotype_image(img_bgr, image_name):
     masks = model.predict_masks(
         embedding,
         TEXT_ONLY_PROMPT,
-        confidence_threshold=0.4,
+        confidence_threshold=0.3,
     )
     del embedding
     gc.collect()
