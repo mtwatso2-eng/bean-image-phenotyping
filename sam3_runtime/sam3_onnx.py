@@ -28,6 +28,19 @@ def _input_dtype(session: onnxruntime.InferenceSession, name: str) -> np.dtype:
     return np.float32
 
 
+def _create_session(path: str, providers) -> onnxruntime.InferenceSession:
+    """Create an ONNX Runtime session tuned for lower peak memory."""
+    options = onnxruntime.SessionOptions()
+    options.enable_cpu_mem_arena = False
+    options.enable_mem_pattern = False
+    options.enable_mem_reuse = False
+    return onnxruntime.InferenceSession(
+        path,
+        sess_options=options,
+        providers=get_onnx_providers(providers),
+    )
+
+
 class SegmentAnything3ONNX:
     """Segmentation model using Segment Anything 3 (SAM3)"""
 
@@ -437,9 +450,7 @@ class SAM3ImageEncoder:
     """
 
     def __init__(self, path: str, providers=None) -> None:
-        self.session = onnxruntime.InferenceSession(
-            path, providers=get_onnx_providers(providers)
-        )
+        self.session = _create_session(path, providers)
         encoder_input = self.session.get_inputs()[0]
         self.input_name: str = encoder_input.name
         self.input_shape = encoder_input.shape
@@ -495,9 +506,7 @@ class SAM3LanguageEncoder:
     """
 
     def __init__(self, path: str, providers=None) -> None:
-        self.session = onnxruntime.InferenceSession(
-            path, providers=get_onnx_providers(providers)
-        )
+        self.session = _create_session(path, providers)
         self.token_dtype = _input_dtype(self.session, "tokens")
 
     def __call__(self, text: str) -> list[np.ndarray]:
@@ -518,9 +527,7 @@ class SAM3ImageDecoder:
     """
 
     def __init__(self, path: str, providers=None) -> None:
-        self.session = onnxruntime.InferenceSession(
-            path, providers=get_onnx_providers(providers)
-        )
+        self.session = _create_session(path, providers)
         self.input_names: list[str] = [i.name for i in self.session.get_inputs()]
         self.output_names: list[str] = [
             output.name for output in self.session.get_outputs()

@@ -23,6 +23,7 @@ No Hugging Face token is required for the ONNX models.
 
 - Do not commit model weights to GitHub.
 - Default variant: `SAM3_ONNX_VARIANT=compact-448` (best for ~4 GB RAM).
+- Limit input size on small instances: `MAX_IMAGE_DIMENSION=1024` (default).
 - Higher quality on larger instances: `SAM3_ONNX_VARIANT=int8`.
 - Optional: set `SAM3_ONNX_DIR` to a directory containing pre-downloaded ONNX files.
 

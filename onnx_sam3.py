@@ -1,3 +1,5 @@
+import gc
+import os
 from dataclasses import dataclass, field
 from typing import Any
 
@@ -15,30 +17,31 @@ from model_cache import Sam3OnnxPaths, get_model_paths
 
 SEGMENTATION_PROMPT = "a bean"
 TEXT_ONLY_PROMPT = [{"type": "text", "data": SEGMENTATION_PROMPT}]
+MAX_IMAGE_DIMENSION = int(os.environ.get("MAX_IMAGE_DIMENSION", "1024"))
 
 _model = None
 
 
+def _limit_image_size(img_bgr: np.ndarray) -> tuple[np.ndarray, float]:
+    """Downscale large images to reduce mask and activation memory."""
+    height, width = img_bgr.shape[:2]
+    longest = max(height, width)
+    if longest <= MAX_IMAGE_DIMENSION:
+        return img_bgr, 1.0
+
+    scale = MAX_IMAGE_DIMENSION / longest
+    new_width = max(1, int(width * scale))
+    new_height = max(1, int(height * scale))
+    resized = cv2.resize(img_bgr, (new_width, new_height), interpolation=cv2.INTER_AREA)
+    return resized, scale
+
+
 @dataclass
 class Sam3OnnxRunner:
-    """Run SAM3 ONNX models with cached sessions for repeated inference."""
+    """Run SAM3 ONNX models with one large encoder loaded at a time."""
 
     paths: Sam3OnnxPaths
-    _image_encoder: SAM3ImageEncoder | None = field(default=None, init=False, repr=False)
-    _language_encoder: SAM3LanguageEncoder | None = field(default=None, init=False, repr=False)
     _decoder: SAM3ImageDecoder | None = field(default=None, init=False, repr=False)
-
-    @property
-    def image_encoder(self) -> SAM3ImageEncoder:
-        if self._image_encoder is None:
-            self._image_encoder = SAM3ImageEncoder(self.paths.image_encoder)
-        return self._image_encoder
-
-    @property
-    def language_encoder(self) -> SAM3LanguageEncoder:
-        if self._language_encoder is None:
-            self._language_encoder = SAM3LanguageEncoder(self.paths.language_encoder)
-        return self._language_encoder
 
     @property
     def decoder(self) -> SAM3ImageDecoder:
@@ -51,10 +54,17 @@ class Sam3OnnxRunner:
             raise ValueError("Expected a non-empty BGR image with three channels")
 
         original_size = cv_image.shape[:2]
-        image_encoder_outputs = self.image_encoder(cv_image)
+
+        image_encoder = SAM3ImageEncoder(self.paths.image_encoder)
+        image_encoder_outputs = image_encoder(cv_image)
+        del image_encoder
+        gc.collect()
 
         text_prompt = text_prompt or "visual"
-        lang_outputs = self.language_encoder(text_prompt)
+        language_encoder = SAM3LanguageEncoder(self.paths.language_encoder)
+        lang_outputs = language_encoder(text_prompt)
+        del language_encoder
+        gc.collect()
 
         return {
             "vision_pos_enc_0": image_encoder_outputs[0],
@@ -99,11 +109,8 @@ def get_model() -> Sam3OnnxRunner:
 
 
 def warm_predictor():
-    """Download ONNX weights if needed and load all model sessions."""
-    model = get_model()
-    _ = model.decoder
-    _ = model.language_encoder
-    _ = model.image_encoder
+    """Download ONNX weights if needed and initialize the small decoder only."""
+    get_model().decoder
 
 
 def _mask_bbox(mask_np: np.ndarray) -> tuple[float, float]:
@@ -125,6 +132,9 @@ def phenotype_image(img_bgr, image_name):
         tuple: (overlay_rgb, bean_records) where overlay_rgb is a visualization
                and bean_records is a list of measurement dicts
     """
+    display_bgr = img_bgr
+    img_bgr, pixel_scale = _limit_image_size(img_bgr)
+
     model = get_model()
     embedding = model.encode(img_bgr, text_prompt=SEGMENTATION_PROMPT)
     masks = model.predict_masks(
@@ -132,9 +142,11 @@ def phenotype_image(img_bgr, image_name):
         TEXT_ONLY_PROMPT,
         confidence_threshold=0.4,
     )
+    del embedding
+    gc.collect()
 
     if masks is None or len(masks) == 0:
-        overlay_rgb = cv2.cvtColor(img_bgr, cv2.COLOR_BGR2RGB)
+        overlay_rgb = cv2.cvtColor(display_bgr, cv2.COLOR_BGR2RGB)
         return overlay_rgb, []
 
     orig_img_rgb = cv2.cvtColor(img_bgr, cv2.COLOR_BGR2RGB)
@@ -146,6 +158,7 @@ def phenotype_image(img_bgr, image_name):
 
     alpha = 0.5
     bean_records = []
+    size_correction = 1.0 / pixel_scale if pixel_scale != 1.0 else 1.0
 
     for bean_id, instance_mask in enumerate(masks[:, 0]):
         mask_np = instance_mask.astype(bool)
@@ -153,6 +166,8 @@ def phenotype_image(img_bgr, image_name):
         if box_w == 0 or box_h == 0:
             continue
 
+        box_w *= size_correction
+        box_h *= size_correction
         ratio = box_h / box_w if box_w != 0 else 0
         masked_pixels = orig_img_rgb[mask_np]
         if masked_pixels.size > 0:
@@ -181,4 +196,15 @@ def phenotype_image(img_bgr, image_name):
         overlay_image[mask_np] = (1 - alpha) * overlay_image[mask_np] + alpha * color_float
 
     overlay_rgb = overlay_image.astype(np.uint8)[:, :, ::-1]
+
+    if pixel_scale != 1.0:
+        display_h, display_w = display_bgr.shape[:2]
+        overlay_rgb = cv2.resize(
+            overlay_rgb,
+            (display_w, display_h),
+            interpolation=cv2.INTER_NEAREST,
+        )
+
+    del masks
+    gc.collect()
     return overlay_rgb, bean_records
