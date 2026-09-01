@@ -1,0 +1,8 @@
+{
+    "version": 1,
+    "locale": "en_US",
+    "metadata": {},
+    "env": {
+        "SHINY_IDLE_TIMEOUT": "0"
+    }
+}
