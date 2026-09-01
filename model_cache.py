@@ -7,6 +7,9 @@ from dotenv import load_dotenv
 APP_DIR = Path(__file__).parent
 SAM3_ONNX_REPO_ID = "rusen/sam3-browser-int8"
 
+# Avoid CoreML on macOS for these models; it is slow and partially unsupported.
+os.environ.setdefault("SAMEXPORTER_ONNX_PROVIDERS", "cpu")
+
 SAM3_VARIANTS = {
     # Lower-resolution ONNX models for memory-constrained hosts (~4 GB RAM).
     "compact-448": {

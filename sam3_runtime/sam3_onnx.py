@@ -8,6 +8,26 @@ from sam3_runtime.clip_tokenizer import tokenize
 from sam3_runtime.runtime import get_onnx_providers
 
 
+def _onnx_numpy_dtype(type_str: str) -> np.dtype:
+    """Map an ONNX Runtime input type string to a NumPy dtype."""
+    mapping = {
+        "tensor(int32)": np.int32,
+        "tensor(int64)": np.int64,
+        "tensor(float)": np.float32,
+        "tensor(double)": np.float64,
+        "tensor(bool)": np.bool_,
+        "tensor(uint8)": np.uint8,
+    }
+    return mapping.get(type_str, np.float32)
+
+
+def _input_dtype(session: onnxruntime.InferenceSession, name: str) -> np.dtype:
+    for item in session.get_inputs():
+        if item.name == name:
+            return _onnx_numpy_dtype(item.type)
+    return np.float32
+
+
 class SegmentAnything3ONNX:
     """Segmentation model using Segment Anything 3 (SAM3)"""
 
@@ -166,15 +186,16 @@ class SegmentAnything3ONNX:
                 "re-export it with a larger --max-geometric-prompts value"
             )
         tensor_length = capacity or max(mark_count, 1)
+        label_dtype = getattr(self.decoder, "box_label_dtype", np.int32)
         # SAM3's Prompt contract is sequence-first: [num_marks, batch, C].
         # ONNX traces its internal geometry attention at a fixed token count,
         # so exported decoders use padded slots and mark them True in box_masks.
         box_coords_np = np.zeros((tensor_length, 1, 4), dtype=np.float32)
-        box_labels_np = np.ones((tensor_length, 1), dtype=np.int64)
+        box_labels_np = np.ones((tensor_length, 1), dtype=label_dtype)
         box_masks_np = np.ones((1, tensor_length), dtype=np.bool_)
         if mark_count:
             box_coords_np[:mark_count, 0] = np.asarray(box_coords, dtype=np.float32)
-            box_labels_np[:mark_count, 0] = np.asarray(box_labels, dtype=np.int64)
+            box_labels_np[:mark_count, 0] = np.asarray(box_labels, dtype=label_dtype)
             box_masks_np[0, :mark_count] = False
 
         masks, scores, boxes = self.decoder(
@@ -477,9 +498,10 @@ class SAM3LanguageEncoder:
         self.session = onnxruntime.InferenceSession(
             path, providers=get_onnx_providers(providers)
         )
+        self.token_dtype = _input_dtype(self.session, "tokens")
 
     def __call__(self, text: str) -> list[np.ndarray]:
-        tokens = tokenize([text], context_length=32)
+        tokens = tokenize([text], context_length=32).astype(self.token_dtype)
         return self.session.run(None, {"tokens": tokens})
 
 
@@ -513,6 +535,8 @@ class SAM3ImageDecoder:
             if isinstance(first_dimension, int) and first_dimension > 0
             else None
         )
+        self.box_label_dtype = _input_dtype(self.session, "box_labels")
+        self.size_dtype = _input_dtype(self.session, "original_height")
 
     def __call__(
         self,
@@ -531,8 +555,8 @@ class SAM3ImageDecoder:
         box_masks,
     ) -> tuple[np.ndarray, np.ndarray, np.ndarray]:
         inputs: dict[str, np.ndarray | None] = {
-            "original_height": np.array(original_size[0], dtype=np.int64),
-            "original_width": np.array(original_size[1], dtype=np.int64),
+            "original_height": np.array(original_size[0], dtype=self.size_dtype),
+            "original_width": np.array(original_size[1], dtype=self.size_dtype),
             "vision_pos_enc_0": vision_pos_enc_0,
             "vision_pos_enc_1": vision_pos_enc_1,
             "vision_pos_enc_2": vision_pos_enc_2,

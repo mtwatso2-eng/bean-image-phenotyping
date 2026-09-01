@@ -1,5 +1,4 @@
-import gc
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from typing import Any
 
 import cv2
@@ -22,26 +21,40 @@ _model = None
 
 @dataclass
 class Sam3OnnxRunner:
-    """Run SAM3 ONNX models one encoder at a time to limit peak RAM."""
+    """Run SAM3 ONNX models with cached sessions for repeated inference."""
 
     paths: Sam3OnnxPaths
-    _decoder: SAM3ImageDecoder | None = None
+    _image_encoder: SAM3ImageEncoder | None = field(default=None, init=False, repr=False)
+    _language_encoder: SAM3LanguageEncoder | None = field(default=None, init=False, repr=False)
+    _decoder: SAM3ImageDecoder | None = field(default=None, init=False, repr=False)
+
+    @property
+    def image_encoder(self) -> SAM3ImageEncoder:
+        if self._image_encoder is None:
+            self._image_encoder = SAM3ImageEncoder(self.paths.image_encoder)
+        return self._image_encoder
+
+    @property
+    def language_encoder(self) -> SAM3LanguageEncoder:
+        if self._language_encoder is None:
+            self._language_encoder = SAM3LanguageEncoder(self.paths.language_encoder)
+        return self._language_encoder
+
+    @property
+    def decoder(self) -> SAM3ImageDecoder:
+        if self._decoder is None:
+            self._decoder = SAM3ImageDecoder(self.paths.decoder)
+        return self._decoder
 
     def encode(self, cv_image: np.ndarray, text_prompt: str | None = None) -> dict[str, Any]:
         if cv_image is None or cv_image.ndim != 3 or cv_image.shape[2] != 3:
             raise ValueError("Expected a non-empty BGR image with three channels")
 
         original_size = cv_image.shape[:2]
-        image_encoder = SAM3ImageEncoder(self.paths.image_encoder)
-        image_encoder_outputs = image_encoder(cv_image)
-        del image_encoder
-        gc.collect()
+        image_encoder_outputs = self.image_encoder(cv_image)
 
         text_prompt = text_prompt or "visual"
-        language_encoder = SAM3LanguageEncoder(self.paths.language_encoder)
-        lang_outputs = language_encoder(text_prompt)
-        del language_encoder
-        gc.collect()
+        lang_outputs = self.language_encoder(text_prompt)
 
         return {
             "vision_pos_enc_0": image_encoder_outputs[0],
@@ -55,12 +68,6 @@ class Sam3OnnxRunner:
             "language_features": lang_outputs[1],
             "language_embeds": lang_outputs[2],
         }
-
-    @property
-    def decoder(self) -> SAM3ImageDecoder:
-        if self._decoder is None:
-            self._decoder = SAM3ImageDecoder(self.paths.decoder)
-        return self._decoder
 
     def predict_masks(
         self,
@@ -92,8 +99,11 @@ def get_model() -> Sam3OnnxRunner:
 
 
 def warm_predictor():
-    """Download ONNX weights if needed and initialize the decoder."""
-    get_model().decoder
+    """Download ONNX weights if needed and load all model sessions."""
+    model = get_model()
+    _ = model.decoder
+    _ = model.language_encoder
+    _ = model.image_encoder
 
 
 def _mask_bbox(mask_np: np.ndarray) -> tuple[float, float]:
