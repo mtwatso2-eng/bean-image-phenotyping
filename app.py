@@ -71,8 +71,8 @@ def server(input, output, session):
         return ui.div(
             ui.p(f"SAM3 model failed to load: {status.removeprefix('error: ')}"),
             ui.p(
-                "Request access at huggingface.co/facebook/sam3, then set HF_TOKEN "
-                "in the deployment environment."
+                "Check that ONNX Runtime can download rusen/sam3-browser-int8 and "
+                "that the server has enough free memory."
             ),
             style="margin: 10px 0; padding: 10px; background-color: #ffebee; border-radius: 5px;",
         )

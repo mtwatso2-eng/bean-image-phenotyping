@@ -26,8 +26,9 @@ def get_ui():
         ),
         ui.h3("Model setup"),
         ui.p(
-            "SAM3 weights are downloaded automatically on server launch from "
-            "Hugging Face and cached locally. Request model access at "
-            "huggingface.co/facebook/sam3, then set HF_TOKEN in your environment."
+            "The app uses quantized SAM3 ONNX models from "
+            "huggingface.co/rusen/sam3-browser-int8, downloaded automatically "
+            "on server launch. The compact-448 variant is used by default for "
+            "memory-constrained deployments."
         ),
     )

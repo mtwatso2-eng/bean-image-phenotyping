@@ -1,43 +1,78 @@
 import os
+from dataclasses import dataclass
 from pathlib import Path
 
 from dotenv import load_dotenv
 
 APP_DIR = Path(__file__).parent
-SAM3_REPO_ID = "facebook/sam3"
-SAM3_FILENAME = "sam3.pt"
+SAM3_ONNX_REPO_ID = "rusen/sam3-browser-int8"
+
+SAM3_VARIANTS = {
+    # Lower-resolution ONNX models for memory-constrained hosts (~4 GB RAM).
+    "compact-448": {
+        "image_encoder": "compact-448/sam3_image_encoder_fp16.onnx",
+        "language_encoder": "compact-448/sam3_language_encoder.onnx",
+        "decoder": "compact-448/sam3_decoder.onnx",
+    },
+    "int8": {
+        "image_encoder": "sam3_image_encoder.onnx",
+        "language_encoder": "sam3_language_encoder.onnx",
+        "decoder": "sam3_decoder.onnx",
+    },
+}
 
 load_dotenv(APP_DIR / "tokens.env")
 
-_model_path = None
+_paths: "Sam3OnnxPaths | None" = None
 
 
-def get_model_path() -> Path:
-    """Return the cached SAM3 weights path, downloading from Hugging Face if needed."""
-    global _model_path
-    if _model_path is not None:
-        return _model_path
+@dataclass(frozen=True)
+class Sam3OnnxPaths:
+    image_encoder: Path
+    language_encoder: Path
+    decoder: Path
 
-    env_path = os.environ.get("SAM3_MODEL_PATH")
-    if env_path:
-        path = Path(env_path).expanduser()
-        if not path.exists():
-            raise FileNotFoundError(f"SAM3_MODEL_PATH does not exist: {path}")
-        _model_path = path
-        return _model_path
 
-    local_path = APP_DIR / SAM3_FILENAME
-    if local_path.exists():
-        _model_path = local_path
-        return _model_path
+def get_sam3_variant() -> str:
+    variant = os.environ.get("SAM3_ONNX_VARIANT", "compact-448").strip()
+    if variant not in SAM3_VARIANTS:
+        raise ValueError(
+            f"Unknown SAM3_ONNX_VARIANT '{variant}'. "
+            f"Choose one of: {', '.join(SAM3_VARIANTS)}"
+        )
+    return variant
+
+
+def _download_model(filename: str) -> Path:
+    local_override = os.environ.get("SAM3_ONNX_DIR")
+    if local_override:
+        path = Path(local_override).expanduser() / filename
+        if path.exists():
+            return path
+        raise FileNotFoundError(f"SAM3 ONNX file not found: {path}")
 
     from huggingface_hub import hf_hub_download
 
     token = os.environ.get("HF_TOKEN") or os.environ.get("HUGGINGFACE_HUB_TOKEN")
     downloaded_path = hf_hub_download(
-        repo_id=SAM3_REPO_ID,
-        filename=SAM3_FILENAME,
+        repo_id=SAM3_ONNX_REPO_ID,
+        filename=filename,
         token=token,
     )
-    _model_path = Path(downloaded_path)
-    return _model_path
+    return Path(downloaded_path)
+
+
+def get_model_paths() -> Sam3OnnxPaths:
+    """Return cached paths to the SAM3 ONNX model files."""
+    global _paths
+    if _paths is not None:
+        return _paths
+
+    variant = get_sam3_variant()
+    files = SAM3_VARIANTS[variant]
+    _paths = Sam3OnnxPaths(
+        image_encoder=_download_model(files["image_encoder"]),
+        language_encoder=_download_model(files["language_encoder"]),
+        decoder=_download_model(files["decoder"]),
+    )
+    return _paths
